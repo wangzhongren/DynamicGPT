@@ -1,4 +1,5 @@
 # DynamicGPT
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17719398.svg)](https://doi.org/10.5281/zenodo.17719398)
 
 A minimalistic conversational model based on the **"AI = Dynamic Classification"** theory (Wang, 2025).  
 It simulates language generation through **context-driven rule matching**, without any deep learning frameworks or pre-trained models.
