@@ -9,7 +9,7 @@ from dataset import TextDataset
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH = 128
-SEQ_LEN = 64
+SEQ_LEN = 128
 LR = 3e-4
 EPOCHS = 10
 DATA_PATH = "data/tiny.txt"
@@ -32,11 +32,16 @@ loader = DataLoader(dataset, batch_size=BATCH, shuffle=True)
 best_loss = float('inf')
 best_path = "model_best.pth"
 
-model = DynamicCategorizationLM(128, emb_dim=512, hidden_dim=256).to(device)
+model = DynamicCategorizationLM(128, emb_dim=256, hidden_dim=256,seq_len=256).to(device)
 opt = AdamW(model.parameters(), lr=LR)
 criterion = CrossEntropyLoss()
 
 for epoch in range(EPOCHS):
+    if epoch == 8:
+        for param_group in opt.param_groups:
+            param_group['lr'] = 1e-4
+        print("→ Learning rate decayed to 1e-4")
+    
     epoch_losses = []
     pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
     
