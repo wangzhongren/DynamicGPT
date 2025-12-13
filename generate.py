@@ -1,66 +1,62 @@
 # generate.py
 import torch
-import torch.nn.functional as F
+import argparse
 from model import DynamicCategorizationLM
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-CKPT = "model_best.pth"
-SEQ_LEN = 128  # 必须与训练时一致
 
-# === 1. 加载模型和元数据 ===
-ckpt = torch.load(CKPT, map_location=device)
-vocab_size = ckpt.get('vocab_size', 128)  # 优先用保存的 vocab_size
+def main(prompt="bye", ckpt_path="model_stage1.pth", use_refinement=True, max_new_tokens=100):
+    ckpt = torch.load(ckpt_path, map_location=device)
+    
+    vocab_size = ckpt['vocab_size']
+    stoi = ckpt['stoi']
+    itos = ckpt['itos']
+    config = ckpt['config']
 
-model = DynamicCategorizationLM(
-    vocab_size=vocab_size,
-    emb_dim=256,
-    hidden_dim=256,
-    seq_len=256
-)
-model.load_state_dict(ckpt['state_dict'])
-model.to(device).eval()
+    model = DynamicCategorizationLM(
+        vocab_size=vocab_size,
+        emb_dim=config['emb_dim'],
+        hidden_dim=config['emb_dim'],
+        seq_len=config['seq_len']
+    ).to(device)
+    model.load_state_dict(ckpt['state_dict'], strict=True)
+    model.eval()
 
-# === 2. 编解码函数（确保只处理 0-127）===
-def encode(text):
-    return [min(ord(c), 127) for c in text]
+    # ✅ Use dataset-style tokenization
+    import re
+    tokens = re.findall(r"\w+|[^\w\s]", prompt, re.UNICODE)
+    context_ids = [stoi.get(t, 0) for t in tokens]
 
-def decode(ids):
-    return ''.join(chr(i) for i in ids if 0 <= i < 128)
+    generated = []
+    for _ in range(max_new_tokens):
+        next_token = model.generate_next_token(
+            context_ids=context_ids,
+            itos=itos,
+            stoi=stoi,
+            use_refinement=use_refinement
+        )
+        generated.append(next_token)
+        context_ids.append(stoi.get(next_token, 0))
+        context_ids = context_ids[-128:]  # sliding window
 
-# === 3. 生成函数（带温度 + 重复惩罚）===
-def generate(prompt, max_new_tokens=300, temperature=0.8, repetition_penalty=1.2):
-    context = encode(prompt)
-    print(prompt, end='', flush=True)
+        if next_token in {".", "!", "?", "\n"}:
+            break
 
-    with torch.no_grad():
-        for _ in range(max_new_tokens):
-            # 取最后 SEQ_LEN 个 token
-            input_ids = torch.tensor([context[-SEQ_LEN:]], device=device)
-            logits = model(input_ids)[0]  # (vocab_size,)
+    full_output = prompt + " " + " ".join(generated)
+    print(f'Prompt: "{prompt.strip()}"')
+    print(f'Generated:\n{full_output}')
 
-            # 重复惩罚：降低最近 token 的 logit
-            for token in set(context[-10:]):  # 惩罚最近10个
-                if 0 <= token < vocab_size:
-                    logits[token] /= repetition_penalty
-
-            # Temperature + 采样
-            probs = F.softmax(logits / temperature, dim=-1)
-            next_token = torch.multinomial(probs, 1).item()
-
-            # 防止越界
-            if next_token >= vocab_size:
-                next_token = 0  # fallback to null or space
-
-            context.append(next_token)
-            print(chr(next_token) if 0 <= next_token < 128 else '?', end='', flush=True)
-
-            # 可选：遇到换行+大写或特定符号提前停
-            # if next_token == ord('\n'): break
-
-    print()  # 换行
-    return decode(context)
-
-# === 4. 启动生成 ===
 if __name__ == "__main__":
-    prompt = "KING:\nIs this a dagger which I see before me,\n"
-    generate(prompt, max_new_tokens=300, temperature=0.8, repetition_penalty=1.2)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prompt", type=str, default= "KING.\nWhat, ho!")
+    parser.add_argument("--ckpt", type=str, default="model_stage1.pth")
+    parser.add_argument("--no_refine", action="store_true")
+    parser.add_argument("--max_tokens", type=int, default=20)
+    args = parser.parse_args()
+
+    main(
+        prompt=args.prompt,
+        ckpt_path=args.ckpt,
+        use_refinement=False,
+        max_new_tokens=args.max_tokens
+    )

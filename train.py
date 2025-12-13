@@ -4,75 +4,69 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.nn import CrossEntropyLoss
 from tqdm import tqdm
-from model import DynamicCategorizationLM
+from model import DynaCatDiffusionLM
 from dataset import TextDataset
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
 BATCH = 128
 SEQ_LEN = 128
 LR = 3e-4
-EPOCHS = 10
+EPOCHS = 3
 DATA_PATH = "data/tiny.txt"
-CKPT = "model.pth"
+BEST_CKPT = "model_best.pth"
 
 os.makedirs("data", exist_ok=True)
 if not os.path.exists(DATA_PATH):
-    url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
-    mirror_url = "https://ghproxy.com/" + url
-    # text = requests.get("https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt").text
-    with open("data/a.txt","r+") as f:
-        text = f.read();
-    text = ''.join(c for c in text if 0 <= ord(c) < 128)
-    with open(DATA_PATH, "w") as f:
-        f.write(text)
+    try:
+        with open("data/a.txt","r+") as f:
+            text = f.read();
+        text = ''.join(c for c in text if 0 <= ord(c) < 128)
+        with open(DATA_PATH, "w") as f:
+            f.write(text)
+    except Exception as e:
+        print(f"Failed to download: {e}")
+        exit(1)
 
 dataset = TextDataset(DATA_PATH, seq_len=SEQ_LEN)
 loader = DataLoader(dataset, batch_size=BATCH, shuffle=True)
+vocab_size = dataset.vocab_size
 
-best_loss = float('inf')
-best_path = "model_best.pth"
-
-model = DynamicCategorizationLM(128, emb_dim=256, hidden_dim=256,seq_len=256).to(device)
+model = DynaCatDiffusionLM(vocab_size, emb_dim=256, seq_len=SEQ_LEN).to(device)
 opt = AdamW(model.parameters(), lr=LR)
 criterion = CrossEntropyLoss()
+
+best_loss = float('inf')
 
 for epoch in range(EPOCHS):
     if epoch == 8:
         for param_group in opt.param_groups:
             param_group['lr'] = 1e-4
-        print("→ Learning rate decayed to 1e-4")
-    
-    epoch_losses = []
-    pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
-    
+        print("→ LR decayed to 1e-4")
+
+    losses = []
+    pbar = tqdm(loader, desc=f"Epoch {epoch+1}")
     for x, y in pbar:
-        x = x.to(device, non_blocking=True)
-        y = y.to(device, non_blocking=True)
-        
+        x, y = x.to(device), y.to(device)
         opt.zero_grad()
-        logits = model(x)
+        logits = model(x, use_refinement=False)  # ← NO refinement in training
         loss = criterion(logits, y)
         loss.backward()
-        
-        # ✅ 关键：梯度裁剪（防震荡）
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
-        epoch_losses.append(loss.item())
+        losses.append(loss.item())
         pbar.set_postfix(loss=loss.item())
-    
-    # 计算 epoch 平均 loss（更稳定）
-    avg_loss = sum(epoch_losses) / len(epoch_losses)
+
+    avg_loss = sum(losses) / len(losses)
     print(f"Epoch {epoch+1}, avg loss: {avg_loss:.4f}")
-    
-    # ✅ 保存最佳模型
+
     if avg_loss < best_loss:
         best_loss = avg_loss
         torch.save({
             'state_dict': model.state_dict(),
-            'epoch': epoch + 1,
-            'loss': avg_loss
-        }, best_path)
-        print(f"→ New best model saved (loss={avg_loss:.4f})")
+            'vocab_size': vocab_size,
+            'config': {'emb_dim': 256, 'seq_len': SEQ_LEN}
+        }, BEST_CKPT)
+        print(f"→ Saved best model (loss={avg_loss:.4f})")
 
-torch.save({'state_dict': model.state_dict()}, CKPT)
+torch.save(model.state_dict(), "model.pth")
